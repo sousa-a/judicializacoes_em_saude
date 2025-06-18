@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+
+# Ambiente
+.env
+.venv/
+*.egg-info/
+
+# IDEs / editores
+.vscode/
+.idea/
+*.swp
+
+# Jupyter
+.ipynb_checkpoints/
+
+
+
+.DS_Store
+Thumbs.db
+
+*.log
+*.sqlite
+*.pfx
+
