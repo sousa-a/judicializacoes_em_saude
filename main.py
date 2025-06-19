@@ -1,27 +1,3 @@
-# ### OBJETIVO: CONSULTAR AÇÕES DE JUDICIALIZAÇÕES EM SAÚDE E EXTRAIR INFORMAÇÕES DE SEQUESTRO E OUTROS
-# ### ELEMENTOS CONTIDOS NAS DECISÕES, SENTENÇAS
-
-# # Sequestro judicial: decisão judicial que determina a apreensão e custódia de bens (compulsória), a fim de garantir
-# # a execução de uma sentença futura ou o ressarcimento de danos.
-
-# # Sequestro de Verbas Públicas: decisão judicial que determina a apreensão e custódia de verbas públicas (compulsória),
-# # caso o Estado não cumpra a obrigação.
-# # Termos comuns:
-# # "ordeno o sequestro|defiro o sequestro|determino o sequestro|autorizo o sequestro..."
-
-# # Bloqueio: é a retenção de valores em contas públicas, impedindo seu uso até que haja decisão judicial sobre sua destinação.
-# # Os valores ficam "congelados" na conta do ente público. Realizado pelo sistema BACENJUD (antigo SISBAJUD).
-# # Pode ser convertido em sequestro.
-# # Termos comuns: 
-# # "ordeno o bloqueio|defiro o bloqueio|determino o bloqueio|autorizo o bloqueio"
-
-# # Transferência: É o repasse dos valores já sequestrados ou bloqueados para o beneficiário final — geralmente o hospital,
-# # distribuidor, clínica, farmácia, laboratório ou o próprio paciente.
-# # Por vezes, finaliza a etapa de cumprimento de decisão judicial.
-# # Pode envolver pagamento de fornecedores ou reembolso ao autor da ação, conforme o caso.
-# # Termos comuns:
-# # "ordeno a transferência|determino a transferência|autorizo a transferência|defiro a transferência..."
-
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -58,7 +34,7 @@ def formata_cnj(raw: str) -> str:
         f"{digitos[16:20]}"
     )
 
-# Termos comuns presentes nos documentos consultados que autoriza/determinam bloqueio, sequestro ou transferência
+# Termos comuns presentes nos documentos consultados que autorizam/determinam bloqueio, sequestro ou transferência
 termos_bloqueio = (
     "ordeno o bloqueio|defiro o bloqueio|determino o bloqueio|"
     "defiro o pedido de tutela de urgência para determinar o bloqueio|"
@@ -82,7 +58,7 @@ re_trans = re.compile(termos_transferencia, flags=re.I)
 # Argumentos do Selenium
 options = Options()
 options.add_argument("--disable-notifications")
-options.add_argument("--headless") #ativa o modo headless
+options.add_argument("--headless")  # ativa o modo headless
 service = Service(ChromeDriverManager().install())
 driver  = webdriver.Chrome(service=service, options=options)
 wait    = WebDriverWait(driver, 10)
@@ -96,6 +72,85 @@ print(f"Total de processos na lista: {total_proc}")
 
 registros  = []
 start_time = time.time()
+
+# -------------------------------------------------------------------------
+# NOVO utilitário de XPath baseado em label
+# -------------------------------------------------------------------------
+def _xpath_valor_por_label(lbl: str) -> str:
+    """
+    Retorna o texto dentro do <div class="col-sm-12"> logo após o <label>
+    cujo conteúdo contém *lbl* (case/acentos tolerantes).
+    """
+    try:
+        el = driver.find_element(
+            By.XPATH,
+            f"//div[@class='propertyView ']"
+            f"[div[@class='name']/label[contains(translate(.,"
+            f"'ÁÀÂÃÉÈÊÍÌÎÓÒÔÕÚÙÛÇ','AAAEEEIIOOOUUC'),'{lbl.upper()}')]]"
+            f"//div[@class='col-sm-12' and normalize-space()]"
+        )
+        return el.text.strip()
+    except NoSuchElementException:
+        return ""
+
+cpf_re  = re.compile(r"\d{3}\.\d{3}\.\d{3}-\d{2}")
+cnpj_re = re.compile(r"\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}")
+
+# -------------------------------------------------------------------------
+# NOVO helper: sanitiza nome da parte, removendo CPF/CNPJ e descrições
+# -------------------------------------------------------------------------
+def _limpa_nome_parte(raw: str) -> str:
+    """
+    Remove CPF/CNPJ e descrições, deixando apenas o nome.
+    Ex.: "ANTUANETE XAVIER - CPF:  (EXEQUENTE)" ➜ "ANTUANETE XAVIER"
+    """
+    txt = cpf_re.sub("", raw)
+    txt = cnpj_re.sub("", txt)
+    txt = re.sub(r"CPF:|CNPJ:", "", txt, flags=re.I)
+    txt = re.sub(r"\(.*?\)", "", txt)        # remove descrições entre parênteses
+    txt = txt.split(" - ")[0]               # considera o que vem antes do primeiro hífen
+    txt = re.sub(r"\s{2,}", " ", txt)       # colapsa múltiplos espaços
+    return txt.strip(" -").strip()
+
+# -------------------------------------------------------------------------
+# NOVO helper: devolve tupla (nome, cpf) percorrendo o Polo Ativo
+# -------------------------------------------------------------------------
+def _extrai_polo_ativo() -> tuple[str, str]:
+    """
+    Percorre a tabela 'PoloAtivoResumidoList' e devolve (nome, cpf) do
+    primeiro participante 'parte', ignorando advogados/representantes.
+    """
+    linhas = driver.find_elements(
+        By.XPATH,
+        "//table[contains(@id,'PoloAtivoResumidoList')]//tbody/tr"
+    )
+    for ln in linhas:
+        try:
+            cel = ln.find_element(By.XPATH, "./td[1]")
+        except NoSuchElementException:
+            continue
+        txt = cel.text.replace("\n", " ").strip()
+        if any(p in txt.upper() for p in ["ADVOGADO", "REPRESENTANTE", "PROCURADORIA"]):
+            continue
+        mcpf = cpf_re.search(txt)
+        cpf  = mcpf.group() if mcpf else ""
+        nome = txt.replace(cpf, "").strip(" -")
+        return _limpa_nome_parte(nome), cpf   # <-- limpa nome antes de devolver
+    return "", ""
+
+# -------------------------------------------------------------------------
+# (bloco _primeiro_participante mantido – usado em outros pontos se necessário)
+# -------------------------------------------------------------------------
+def _primeiro_participante(tabela_id_regex: str):
+    try:
+        cel = driver.find_element(
+            By.XPATH,
+            f"//table[contains(@id,'{tabela_id_regex}')]//tbody/tr[1]/td[1]"
+        )
+        txt = cel.text.replace('\n', ' ').strip()
+        return txt
+    except NoSuchElementException:
+        return ""
 
 # Itera sobre a lista de processos
 for idx, processo in enumerate(processos, start=1):
@@ -122,6 +177,19 @@ for idx, processo in enumerate(processos, start=1):
     driver.find_element(By.XPATH, '//*[@id="fPP:searchProcessos"]').click()
     time.sleep(8)
 
+    # ---------------------------------------------------------------------
+    # NOVO: captura da última movimentação diretamente na tela de resultados
+    # ---------------------------------------------------------------------
+    try:
+        ultima_mov_elem = driver.find_element(
+            By.XPATH,
+            "//table[@id='fPP:processosTable']//td[contains(@id,':j_id267')]"
+        )
+        ultima_mov = ultima_mov_elem.text.strip()
+    except NoSuchElementException:
+        ultima_mov = ""
+
+    # segue para detalhes
     try:
         link_processo = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located(
@@ -132,24 +200,80 @@ for idx, processo in enumerate(processos, start=1):
         link_processo.click()
         time.sleep(5)
     except TimeoutException:
-        print("    → nenhum resultado retornado para este número. Passando para o próximo elemento da lista.")
+        print("    → nenhum resultado retornado para este número.")
         continue
 
+    # Abre detalhes do processo em nova janela
     proc_handle = driver.window_handles[-1]
     driver.switch_to.window(proc_handle)
 
+    # ------------------ EXTRAÇÃO NA PÁGINA DE DETALHES --------------------
+    try:
+        classe_judicial = driver.find_element(
+            By.XPATH,
+            '/html/body/div[5]/div/div/div/div[2]/table/tbody/tr[2]/td/table/tbody/tr/td/'
+            'form/div/div[1]/div[3]/table/tbody/tr[1]/td[3]/span/div/div[2]'
+        ).text.strip()
+    except NoSuchElementException:
+        classe_judicial = ""
+
+    # ---------------------------------------------------------------------
+    # NOVO: captura direta da dataDistribuicao pelo XPath fornecido
+    # ---------------------------------------------------------------------
+    try:
+        data_distribuicao = driver.find_element(
+            By.XPATH,
+            '/html/body/div[5]/div/div/div/div[2]/table/tbody/tr[2]/td/table/tbody/tr/td/'
+            'form/div/div[1]/div[3]/table/tbody/tr[1]/td[2]/span/div/div[2]'
+        ).text.strip()
+    except NoSuchElementException:
+        # fallback para método baseado em label
+        data_distribuicao = _xpath_valor_por_label("DATA DA DISTRIBUICAO")
+
+    # órgão julgador (sem mudança)
+    try:
+        orgao_elem = driver.find_element(
+            By.XPATH,
+            '/html/body/div[5]/div/div/div/div[2]/table/tbody/tr[2]/td/table/tbody/tr/td/'
+            'form/div/div[1]/div[3]/table/tbody/tr[2]/td[3]/span/div/div[2]/div'
+        )
+        linhas_org = orgao_elem.text.strip().splitlines()
+        orgao_julgador = linhas_org[1].strip() if len(linhas_org) > 1 else orgao_elem.text.strip()
+    except NoSuchElementException:
+        orgao_julgador = ""
+
+    # ------------------ Polo ativo / passivo -----------------------------
+    polo_ativo, cpf_polo_ativo = _extrai_polo_ativo()
+
+    # ---------------------------------------------------------------------
+    # captura direta do Polo Passivo via XPath fornecido
+    # ---------------------------------------------------------------------
+    try:
+        polo_passivo_raw = driver.find_element(
+            By.XPATH,
+            "/html/body/div[5]/div/div/div/div[2]/table/tbody/tr[2]/td/table/tbody/tr/"
+            "td/div[2]/div/div[2]/span/div/table/tbody/tr/td[1]/span/div/span"
+        ).text.replace('\n', ' ').strip()
+    except NoSuchElementException:
+        polo_passivo_raw = ""
+
+    mcnpj  = cnpj_re.search(polo_passivo_raw)
+    cnpj_polo_passivo = mcnpj.group() if mcnpj else ""
+    polo_passivo      = _limpa_nome_parte(polo_passivo_raw.replace(cnpj_polo_passivo, ""))
+
+    # Arquivado?
     arquivado = "SIM" if "Arquivado Definitivamente" in driver.page_source else "NÃO"
 
     try:
         total_pag = int(driver.find_element(
             By.XPATH,
-            '/html/body/div[5]/div/div/div/div[2]/table/tbody/tr[2]/td/table/tbody/tr/td/div[6]/div[2]/div[2]/'
-            'div/form/table/tbody/tr[1]/td[3]'
+            '/html/body/div[5]/div/div/div/div[2]/table/tbody/tr[2]/td/table/tbody/tr/td/'
+            'div[6]/div[2]/div[2]/div/form/table/tbody/tr[1]/td[3]'
         ).text.strip())
     except NoSuchElementException:
         total_pag = 1
 
-    # Percorre cada uma das páginas contendo e busca documentos do tipo decisão, sentença, alvará e despacho.
+    # Percorre as páginas de documentos
     for pag in range(1, total_pag + 1):
         if pag > 1:
             driver.execute_script(
@@ -173,7 +297,6 @@ for idx, processo in enumerate(processos, start=1):
             except:
                 continue
 
-            # Extrai os valores para os campos dataHora e tipoDocumento
             data_hora = tipo_raw = ""
             for ln in texto_anchor.splitlines():
                 ln = ln.strip()
@@ -186,7 +309,6 @@ for idx, processo in enumerate(processos, start=1):
             if not any(k in texto_anchor.lower() for k in ["decisão", "decisao", "sentença", "sentenca", "alvará", "alvara", "despacho"]):
                 continue
 
-            # Às vezes, o site da consulta pública pode ficar sobrecarregado
             anchor_id = anchor.get_attribute("id")
             for tent in range(4):
                 try:
@@ -203,7 +325,6 @@ for idx, processo in enumerate(processos, start=1):
             child = [h for h in driver.window_handles if h != proc_handle][-1]
             driver.switch_to.window(child)
 
-            # Tenta localizar elemento .folha e faz fallback
             try:
                 texto_elem = WebDriverWait(driver, 5).until(
                     EC.presence_of_element_located((By.CLASS_NAME, "folha"))
@@ -236,6 +357,14 @@ for idx, processo in enumerate(processos, start=1):
             valor_total = valor_capturado if any(x == "SIM" for x in [contem_seq, contem_bloq, contem_tran]) else ""
 
             registros.append({
+                "poloAtivo": polo_ativo,
+                "cpfPoloAtivo": cpf_polo_ativo,
+                "poloPassivo": polo_passivo,
+                "cnpjPoloPassivo": cnpj_polo_passivo,
+                "orgaoJulgador": orgao_julgador,
+                "classeJudicial": classe_judicial,
+                "dataDistribuicao": data_distribuicao,
+                "ultimaMovimentacao": ultima_mov,
                 "numeroProcesso": processo,
                 "idDocumento": id_doc,
                 "tipoDocumento": tipo_raw,
@@ -254,6 +383,19 @@ for idx, processo in enumerate(processos, start=1):
 
     # Grava o incremento no CSV diário
     df_inc = pd.DataFrame(registros)
+
+    # ordem incluindo CPF/CNPJ ao lado dos polos
+    col_order = [
+        "poloAtivo", "cpfPoloAtivo", "poloPassivo", "cnpjPoloPassivo",
+        "orgaoJulgador", "classeJudicial", "dataDistribuicao",
+        "ultimaMovimentacao", "numeroProcesso", "idDocumento",
+        "tipoDocumento", "dataHora", "assinadoPor",
+        "contemAutorizacaoSequestro", "contemAutorizacaoBloqueio",
+        "contemAutorizacaoTransferencia", "valorTotal",
+        "arquivado", "textoDocumento"
+    ]
+    df_inc = df_inc[col_order]
+
     with open(arquivo_dia, "a", newline="") as f:
         df_inc.to_csv(f, sep="\t", index=False, header=not os.path.getsize(f.name))
 
@@ -261,11 +403,12 @@ for idx, processo in enumerate(processos, start=1):
     driver.switch_to.window(driver.window_handles[0])
 
 # Consolida todos os resultados e salva
-pd.DataFrame(registros).to_csv(
+df_final = pd.DataFrame(registros)[col_order]
+df_final.to_csv(
     "resultados_sequestro_tjdft.csv", sep="\t", index=False, encoding="utf-8-sig"
 )
 
-elapsed = time.time() - start_time #Tempo transcorrido
+elapsed = time.time() - start_time  # Tempo transcorrido
 h, r = divmod(int(elapsed), 3600)
 m, s = divmod(r, 60)
 print(f"\nConcluído – arquivos salvos. Tempo total: {h:02d}:{m:02d}:{s:02d}")

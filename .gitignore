@@ -16,8 +16,7 @@ __pycache__/
 
 # Jupyter
 .ipynb_checkpoints/
-
-
+*.ipynb
 
 .DS_Store
 Thumbs.db
@@ -26,3 +25,7 @@ Thumbs.db
 *.sqlite
 *.pfx
 
+*.csv
+*.odf
+*.ods
+*.xlsx
