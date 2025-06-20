@@ -73,9 +73,6 @@ print(f"Total de processos na lista: {total_proc}")
 registros  = []
 start_time = time.time()
 
-# -------------------------------------------------------------------------
-# NOVO utilitário de XPath baseado em label
-# -------------------------------------------------------------------------
 def _xpath_valor_por_label(lbl: str) -> str:
     """
     Retorna o texto dentro do <div class="col-sm-12"> logo após o <label>
@@ -96,9 +93,6 @@ def _xpath_valor_por_label(lbl: str) -> str:
 cpf_re  = re.compile(r"\d{3}\.\d{3}\.\d{3}-\d{2}")
 cnpj_re = re.compile(r"\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}")
 
-# -------------------------------------------------------------------------
-# NOVO helper: sanitiza nome da parte, removendo CPF/CNPJ e descrições
-# -------------------------------------------------------------------------
 def _limpa_nome_parte(raw: str) -> str:
     """
     Remove CPF/CNPJ e descrições, deixando apenas o nome.
@@ -112,9 +106,6 @@ def _limpa_nome_parte(raw: str) -> str:
     txt = re.sub(r"\s{2,}", " ", txt)       # colapsa múltiplos espaços
     return txt.strip(" -").strip()
 
-# -------------------------------------------------------------------------
-# NOVO helper: devolve tupla (nome, cpf) percorrendo o Polo Ativo
-# -------------------------------------------------------------------------
 def _extrai_polo_ativo() -> tuple[str, str]:
     """
     Percorre a tabela 'PoloAtivoResumidoList' e devolve (nome, cpf) do
@@ -135,12 +126,10 @@ def _extrai_polo_ativo() -> tuple[str, str]:
         mcpf = cpf_re.search(txt)
         cpf  = mcpf.group() if mcpf else ""
         nome = txt.replace(cpf, "").strip(" -")
-        return _limpa_nome_parte(nome), cpf   # <-- limpa nome antes de devolver
+        return _limpa_nome_parte(nome), cpf
     return "", ""
 
-# -------------------------------------------------------------------------
-# (bloco _primeiro_participante mantido – usado em outros pontos se necessário)
-# -------------------------------------------------------------------------
+
 def _primeiro_participante(tabela_id_regex: str):
     try:
         cel = driver.find_element(
@@ -177,9 +166,6 @@ for idx, processo in enumerate(processos, start=1):
     driver.find_element(By.XPATH, '//*[@id="fPP:searchProcessos"]').click()
     time.sleep(8)
 
-    # ---------------------------------------------------------------------
-    # NOVO: captura da última movimentação diretamente na tela de resultados
-    # ---------------------------------------------------------------------
     try:
         ultima_mov_elem = driver.find_element(
             By.XPATH,
@@ -189,7 +175,6 @@ for idx, processo in enumerate(processos, start=1):
     except NoSuchElementException:
         ultima_mov = ""
 
-    # segue para detalhes
     try:
         link_processo = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located(
@@ -207,7 +192,6 @@ for idx, processo in enumerate(processos, start=1):
     proc_handle = driver.window_handles[-1]
     driver.switch_to.window(proc_handle)
 
-    # ------------------ EXTRAÇÃO NA PÁGINA DE DETALHES --------------------
     try:
         classe_judicial = driver.find_element(
             By.XPATH,
@@ -217,9 +201,6 @@ for idx, processo in enumerate(processos, start=1):
     except NoSuchElementException:
         classe_judicial = ""
 
-    # ---------------------------------------------------------------------
-    # NOVO: captura direta da dataDistribuicao pelo XPath fornecido
-    # ---------------------------------------------------------------------
     try:
         data_distribuicao = driver.find_element(
             By.XPATH,
@@ -230,7 +211,6 @@ for idx, processo in enumerate(processos, start=1):
         # fallback para método baseado em label
         data_distribuicao = _xpath_valor_por_label("DATA DA DISTRIBUICAO")
 
-    # órgão julgador (sem mudança)
     try:
         orgao_elem = driver.find_element(
             By.XPATH,
@@ -242,12 +222,10 @@ for idx, processo in enumerate(processos, start=1):
     except NoSuchElementException:
         orgao_julgador = ""
 
-    # ------------------ Polo ativo / passivo -----------------------------
+
+    # Chama a função extrai_polo_ativo() para obter o nome e o cpf
     polo_ativo, cpf_polo_ativo = _extrai_polo_ativo()
 
-    # ---------------------------------------------------------------------
-    # captura direta do Polo Passivo via XPath fornecido
-    # ---------------------------------------------------------------------
     try:
         polo_passivo_raw = driver.find_element(
             By.XPATH,
@@ -261,7 +239,7 @@ for idx, processo in enumerate(processos, start=1):
     cnpj_polo_passivo = mcnpj.group() if mcnpj else ""
     polo_passivo      = _limpa_nome_parte(polo_passivo_raw.replace(cnpj_polo_passivo, ""))
 
-    # Arquivado?
+    # Extrai a informação acerca do arquivamento do processo
     arquivado = "SIM" if "Arquivado Definitivamente" in driver.page_source else "NÃO"
 
     try:
@@ -384,7 +362,6 @@ for idx, processo in enumerate(processos, start=1):
     # Grava o incremento no CSV diário
     df_inc = pd.DataFrame(registros)
 
-    # ordem incluindo CPF/CNPJ ao lado dos polos
     col_order = [
         "poloAtivo", "cpfPoloAtivo", "poloPassivo", "cnpjPoloPassivo",
         "orgaoJulgador", "classeJudicial", "dataDistribuicao",
@@ -402,13 +379,8 @@ for idx, processo in enumerate(processos, start=1):
     driver.close()
     driver.switch_to.window(driver.window_handles[0])
 
-# Consolida todos os resultados e salva
-df_final = pd.DataFrame(registros)[col_order]
-df_final.to_csv(
-    "resultados_sequestro_tjdft.csv", sep="\t", index=False, encoding="utf-8-sig"
-)
-
 elapsed = time.time() - start_time  # Tempo transcorrido
+# Converte de segundos para o formato hh:mm:ss
 h, r = divmod(int(elapsed), 3600)
 m, s = divmod(r, 60)
 print(f"\nConcluído – arquivos salvos. Tempo total: {h:02d}:{m:02d}:{s:02d}")
