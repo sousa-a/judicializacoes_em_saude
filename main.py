@@ -11,18 +11,17 @@ from selenium.common.exceptions import (
 )
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import TimeoutException, NoAlertPresentException
+
 import pandas as pd
 import time, re, os
 from datetime import date
 
-# Essa função usa regex para se certificar que o número do processo siga o padrão CNJ
 import re as _re
+
+# Converte o número do processo no padrão do CNJ, caso necessário
 def formata_cnj(raw: str) -> str:
-    """
-    Converte “07139631420238070016” (ou qualquer formato sem pontuação)
-    para “0713963-14.2023.8.07.0016”.
-    Se já estiver no padrão CNJ, devolve sem alteração.
-    """
+    """Converte '07139631420238070016' (ou variações) para o padrão CNJ."""
     if _re.fullmatch(r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}", raw):
         return raw
     digitos = _re.sub(r"\D", "", raw).zfill(20)
@@ -34,7 +33,7 @@ def formata_cnj(raw: str) -> str:
         f"{digitos[16:20]}"
     )
 
-# Termos comuns presentes nos documentos consultados que autorizam/determinam bloqueio, sequestro ou transferência
+# Padrões-chave de decisão (case-insensitive)
 termos_bloqueio = (
     "ordeno o bloqueio|defiro o bloqueio|determino o bloqueio|"
     "defiro o pedido de tutela de urgência para determinar o bloqueio|"
@@ -58,12 +57,12 @@ re_trans = re.compile(termos_transferencia, flags=re.I)
 # Argumentos do Selenium
 options = Options()
 options.add_argument("--disable-notifications")
-options.add_argument("--headless")  # ativa o modo headless
+options.add_argument("--headless")
 service = Service(ChromeDriverManager().install())
 driver  = webdriver.Chrome(service=service, options=options)
 wait    = WebDriverWait(driver, 10)
 
-# Lê o arquivo contendo a lista de processos que serão consultados
+# Lê a lista de processos
 df_proc = pd.read_csv("processos.csv", sep="\t", dtype={"processos": str})
 df_proc["processos"] = df_proc["processos"].apply(formata_cnj)
 processos      = df_proc["processos"].tolist()
@@ -73,11 +72,12 @@ print(f"Total de processos na lista: {total_proc}")
 registros  = []
 start_time = time.time()
 
+# Funções e expressões regex para a extração de valores de campos
+cpf_re  = re.compile(r"\d{3}\.\d{3}\.\d{3}-\d{2}")
+cnpj_re = re.compile(r"\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}")
+
 def _xpath_valor_por_label(lbl: str) -> str:
-    """
-    Retorna o texto dentro do <div class="col-sm-12"> logo após o <label>
-    cujo conteúdo contém *lbl* (case/acentos tolerantes).
-    """
+    """Busca valor imediatamente após <label> cujo texto contém lbl."""
     try:
         el = driver.find_element(
             By.XPATH,
@@ -90,27 +90,16 @@ def _xpath_valor_por_label(lbl: str) -> str:
     except NoSuchElementException:
         return ""
 
-cpf_re  = re.compile(r"\d{3}\.\d{3}\.\d{3}-\d{2}")
-cnpj_re = re.compile(r"\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}")
-
 def _limpa_nome_parte(raw: str) -> str:
-    """
-    Remove CPF/CNPJ e descrições, deixando apenas o nome.
-    Ex.: "ANTUANETE XAVIER - CPF:  (EXEQUENTE)" ➜ "ANTUANETE XAVIER"
-    """
     txt = cpf_re.sub("", raw)
     txt = cnpj_re.sub("", txt)
     txt = re.sub(r"CPF:|CNPJ:", "", txt, flags=re.I)
-    txt = re.sub(r"\(.*?\)", "", txt)        # remove descrições entre parênteses
-    txt = txt.split(" - ")[0]               # considera o que vem antes do primeiro hífen
-    txt = re.sub(r"\s{2,}", " ", txt)       # colapsa múltiplos espaços
+    txt = re.sub(r"\(.*?\)", "", txt)
+    txt = txt.split(" - ")[0]
+    txt = re.sub(r"\s{2,}", " ", txt)
     return txt.strip(" -").strip()
 
 def _extrai_polo_ativo() -> tuple[str, str]:
-    """
-    Percorre a tabela 'PoloAtivoResumidoList' e devolve (nome, cpf) do
-    primeiro participante 'parte', ignorando advogados/representantes.
-    """
     linhas = driver.find_elements(
         By.XPATH,
         "//table[contains(@id,'PoloAtivoResumidoList')]//tbody/tr"
@@ -129,32 +118,28 @@ def _extrai_polo_ativo() -> tuple[str, str]:
         return _limpa_nome_parte(nome), cpf
     return "", ""
 
-
 def _primeiro_participante(tabela_id_regex: str):
     try:
         cel = driver.find_element(
             By.XPATH,
             f"//table[contains(@id,'{tabela_id_regex}')]//tbody/tr[1]/td[1]"
         )
-        txt = cel.text.replace('\n', ' ').strip()
-        return txt
+        return cel.text.replace('\n', ' ').strip()
     except NoSuchElementException:
         return ""
 
-# Itera sobre a lista de processos
-for idx, processo in enumerate(processos, start=1):
-    arquivo_dia = f"{date.today()}consulta_acoes_judiciais_sesdf_tjdft.csv"
+# Loop principal
+for idx, processo in enumerate(processos[8432:], start=1):
+    arquivo_dia = "resultados_consulta_acoes_judiciais_sesdf_tjdft.csv"
     ja_no_csv   = os.path.exists(arquivo_dia) and any(
         processo in ln for ln in open(arquivo_dia, "r", encoding="utf-8")
     )
-
     if ja_no_csv:
         print(f"[{idx}/{total_proc}] {processo} – processo já consultado.")
         continue
     else:
         print(f"[{idx}/{total_proc}] {processo} – consultando…")
 
-    # Site da consulta pública (PJE) do TJDFT
     driver.get("https://pje-consultapublica.tjdft.jus.br/consultapublica/ConsultaPublica/listView.seam")
     time.sleep(3)
 
@@ -163,7 +148,22 @@ for idx, processo in enumerate(processos, start=1):
     )
     campo.clear()
     campo.send_keys(processo)
+
+    # aguarda até 1s por um possível alerta
+    try:
+        WebDriverWait(driver, 1).until(EC.alert_is_present())
+        alerta = driver.switch_to.alert
+        texto_alerta = alerta.text.strip()
+        alerta.accept()
+        print("Alerta tratado:", texto_alerta)
+    except TimeoutException:
+        # nenhum alerta apareceu; segue o fluxo normal
+        texto_alerta = ""
+    except NoAlertPresentException:
+        texto_alerta = ""
+        
     driver.find_element(By.XPATH, '//*[@id="fPP:searchProcessos"]').click()
+
     time.sleep(8)
 
     try:
@@ -186,9 +186,26 @@ for idx, processo in enumerate(processos, start=1):
         time.sleep(5)
     except TimeoutException:
         print("    → nenhum resultado retornado para este número.")
+        registro_vazio = {
+            "poloAtivo": "", "cpfPoloAtivo": "", "poloPassivo": "", "cnpjPoloPassivo": "",
+            "orgaoJulgador": "", "classeJudicial": "", "dataDistribuicao": "", "ultimaMovimentacao": "",
+            "numeroProcesso": processo, "idDocumento": "", "tipoDocumento": "N/A", "dataHora": "",
+            "assinadoPor": "", "contemAutorizacaoSequestro": "", "contemAutorizacaoBloqueio": "",
+            "contemAutorizacaoTransferencia": "", "valorTotal": "", "arquivado": "", "textoDocumento": ""
+        }
+        col_order = [
+            "poloAtivo","cpfPoloAtivo","poloPassivo","cnpjPoloPassivo","orgaoJulgador",
+            "classeJudicial","dataDistribuicao","ultimaMovimentacao","numeroProcesso",
+            "idDocumento","tipoDocumento","dataHora","assinadoPor",
+            "contemAutorizacaoSequestro","contemAutorizacaoBloqueio",
+            "contemAutorizacaoTransferencia","valorTotal","arquivado","textoDocumento"
+        ]
+        pd.DataFrame([registro_vazio], columns=col_order).to_csv(
+            arquivo_dia, sep="\t", mode="a", index=False,
+            header=not os.path.exists(arquivo_dia) or os.path.getsize(arquivo_dia) == 0
+        )
         continue
 
-    # Abre detalhes do processo em nova janela
     proc_handle = driver.window_handles[-1]
     driver.switch_to.window(proc_handle)
 
@@ -208,7 +225,6 @@ for idx, processo in enumerate(processos, start=1):
             'form/div/div[1]/div[3]/table/tbody/tr[1]/td[2]/span/div/div[2]'
         ).text.strip()
     except NoSuchElementException:
-        # fallback para método baseado em label
         data_distribuicao = _xpath_valor_por_label("DATA DA DISTRIBUICAO")
 
     try:
@@ -222,8 +238,6 @@ for idx, processo in enumerate(processos, start=1):
     except NoSuchElementException:
         orgao_julgador = ""
 
-
-    # Chama a função extrai_polo_ativo() para obter o nome e o cpf
     polo_ativo, cpf_polo_ativo = _extrai_polo_ativo()
 
     try:
@@ -239,7 +253,6 @@ for idx, processo in enumerate(processos, start=1):
     cnpj_polo_passivo = mcnpj.group() if mcnpj else ""
     polo_passivo      = _limpa_nome_parte(polo_passivo_raw.replace(cnpj_polo_passivo, ""))
 
-    # Extrai a informação acerca do arquivamento do processo
     arquivado = "SIM" if "Arquivado Definitivamente" in driver.page_source else "NÃO"
 
     try:
@@ -251,7 +264,6 @@ for idx, processo in enumerate(processos, start=1):
     except NoSuchElementException:
         total_pag = 1
 
-    # Percorre as páginas de documentos
     for pag in range(1, total_pag + 1):
         if pag > 1:
             driver.execute_script(
@@ -324,15 +336,61 @@ for idx, processo in enumerate(processos, start=1):
             contem_bloq = "SIM" if re_bloq.search(texto_doc)  else "NÃO"
             contem_tran = "SIM" if re_trans.search(texto_doc) else "NÃO"
 
+            # Captura do valor (R$)
+            valor_capturado = ""
+            todas_as_quantias = list(re.finditer(r"R\$[\s]*\d{1,3}(?:\.\d{3})*,\d{2}", texto_doc))
+
+            for m in todas_as_quantias:
+                ini = texto_doc.rfind('\n', 0, m.start()) + 1
+                fim = texto_doc.find('\n', m.end())
+                fim = len(texto_doc) if fim == -1 else fim
+                contexto = texto_doc[ini:fim].lower()
+
+                if contem_seq == "SIM" and "sequestro" in contexto:
+                    valor_capturado = m.group()
+                    break
+                if contem_bloq == "SIM" and "bloque" in contexto:
+                    valor_capturado = m.group()
+                    break
+                if contem_tran == "SIM" and "transfer" in contexto:
+                    valor_capturado = m.group()
+                    break
+
+            # Caso nada tenha sido encontrado com as palavras-chave, usa a primeira quantia do documento como fallback
+            if not valor_capturado and todas_as_quantias:
+                valor_capturado = todas_as_quantias[0].group()
+
+            valor_total = (
+                valor_capturado
+                if any(x == "SIM" for x in [contem_seq, contem_bloq, contem_tran])
+                else ""
+            )
+
+            # textoDocumento (trecho) só é gravado quando existe autorização de sequestro/bloqueio/transferência.
             trecho = ""
             if contem_seq == "SIM":
                 for p in texto_doc.split("\n\n"):
                     if re_seq.search(p):
                         trecho = p.strip(); break
+            elif contem_bloq == "SIM":
+                for p in texto_doc.split("\n\n"):
+                    if re_bloq.search(p):
+                        trecho = p.strip(); break
+            elif contem_tran == "SIM":
+                for p in texto_doc.split("\n\n"):
+                    if re_trans.search(p):
+                        trecho = p.strip(); break
 
-            m_val = re.search(r"R\$[\s]*\d{1,3}(?:\.\d{3})*,\d{2}", texto_doc)
-            valor_capturado = m_val.group() if m_val else ""
-            valor_total = valor_capturado if any(x == "SIM" for x in [contem_seq, contem_bloq, contem_tran]) else ""
+            # Tentativa de extrair o objeto
+            objeto = ""
+            for par in texto_doc.split("\n\n"):
+                if re.search(r"(?i)^\s*(trata-se|cuida-se|apela[çc]ão|embargos|pedido de|demanda)", par):
+                    obj_raw = re.sub(
+                        r"(?i)^\s*(trata-se|cuida-se|apela[çc]ão|embargos|pedido de|demanda)[\s:-]*",
+                        "", par).strip()
+                    ponto = obj_raw.find(".")
+                    objeto = obj_raw[:ponto].strip() if ponto != -1 else obj_raw
+                    break
 
             registros.append({
                 "poloAtivo": polo_ativo,
@@ -348,39 +406,35 @@ for idx, processo in enumerate(processos, start=1):
                 "tipoDocumento": tipo_raw,
                 "dataHora": data_hora,
                 "assinadoPor": assinante,
-                "contemAutorizacaoSequestro":     contem_seq,
-                "contemAutorizacaoBloqueio":      contem_bloq,
+                "contemAutorizacaoSequestro": contem_seq,
+                "contemAutorizacaoBloqueio": contem_bloq,
                 "contemAutorizacaoTransferencia": contem_tran,
                 "valorTotal": valor_total,
                 "arquivado": arquivado,
-                "textoDocumento": trecho
+                "textoDocumento": trecho,
+                "objeto": objeto
             })
 
             driver.close()
             driver.switch_to.window(proc_handle)
 
-    # Grava o incremento no CSV diário
+    # Salva os resultados em arquivo csv
     df_inc = pd.DataFrame(registros)
-
     col_order = [
-        "poloAtivo", "cpfPoloAtivo", "poloPassivo", "cnpjPoloPassivo",
-        "orgaoJulgador", "classeJudicial", "dataDistribuicao",
-        "ultimaMovimentacao", "numeroProcesso", "idDocumento",
-        "tipoDocumento", "dataHora", "assinadoPor",
-        "contemAutorizacaoSequestro", "contemAutorizacaoBloqueio",
-        "contemAutorizacaoTransferencia", "valorTotal",
-        "arquivado", "textoDocumento"
+        "poloAtivo","cpfPoloAtivo","poloPassivo","cnpjPoloPassivo","orgaoJulgador",
+        "classeJudicial","dataDistribuicao","ultimaMovimentacao","numeroProcesso",
+        "idDocumento","tipoDocumento","dataHora","assinadoPor",
+        "contemAutorizacaoSequestro","contemAutorizacaoBloqueio",
+        "contemAutorizacaoTransferencia","valorTotal","arquivado","textoDocumento","objeto"
     ]
     df_inc = df_inc[col_order]
-
     with open(arquivo_dia, "a", newline="") as f:
         df_inc.to_csv(f, sep="\t", index=False, header=not os.path.getsize(f.name))
 
     driver.close()
     driver.switch_to.window(driver.window_handles[0])
 
-elapsed = time.time() - start_time  # Tempo transcorrido
-# Converte de segundos para o formato hh:mm:ss
+elapsed = time.time() - start_time
 h, r = divmod(int(elapsed), 3600)
 m, s = divmod(r, 60)
 print(f"\nConcluído – arquivos salvos. Tempo total: {h:02d}:{m:02d}:{s:02d}")
